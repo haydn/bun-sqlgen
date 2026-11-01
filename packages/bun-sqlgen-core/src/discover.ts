@@ -1,3 +1,4 @@
+import { dirname, resolve } from 'node:path';
 import ts from '@typescript/typescript6';
 import type { ReservedSQL, SavepointSQL, SQL, TransactionSQL } from 'bun';
 import type { Dialect, DiscoveredQuery, WritableColumns } from '#types.ts';
@@ -41,6 +42,7 @@ export type Discoverer = (file: string) => DiscoveredQuery[];
  */
 export function createDiscoverer(input: {
   projectRoot: string;
+  registryPath: string;
   files: string[];
   writable?: WritableColumns;
   dialect?: Dialect;
@@ -68,9 +70,42 @@ export function createDiscoverer(input: {
 
   const program = ts.createProgram(rootFiles, options);
   const checker = program.getTypeChecker();
+  const registryPath = resolve(input.registryPath);
+  const registryDirectories = new Set<string>();
+  for (let dir = dirname(registryPath); !registryDirectories.has(dir); dir = dirname(dir)) {
+    registryDirectories.add(dir);
+  }
+  // Resolve imports before the generated file (or its output directory) exists.
+  const resolutionHost: ts.ModuleResolutionHost = {
+    ...ts.sys,
+    fileExists: (file) => resolve(file) === registryPath || ts.sys.fileExists(file),
+    directoryExists: (dir) => registryDirectories.has(resolve(dir)) || ts.sys.directoryExists(dir),
+  };
+  const isRegistryReference = (name: ts.EntityName): boolean => {
+    const declarations = checker.getSymbolAtLocation(name)?.getDeclarations() ?? [];
+    return declarations.some((declaration) => {
+      if (
+        !ts.isImportSpecifier(declaration) ||
+        (declaration.propertyName ?? declaration.name).text !== 'Queries'
+      ) {
+        return false;
+      }
+      const importDeclaration = declaration.parent.parent.parent;
+      if (!ts.isStringLiteral(importDeclaration.moduleSpecifier)) {
+        return false;
+      }
+      const resolved = ts.resolveModuleName(
+        importDeclaration.moduleSpecifier.text,
+        declaration.getSourceFile().fileName,
+        options,
+        resolutionHost,
+      ).resolvedModule;
+      return !!resolved && resolve(resolved.resolvedFileName) === registryPath;
+    });
+  };
   return (file) => {
     const sf = program.getSourceFile(file);
-    return sf ? discover({ sf, checker, writable, placeholder }) : [];
+    return sf ? discover({ sf, checker, writable, placeholder, isRegistryReference }) : [];
   };
 }
 
@@ -87,6 +122,7 @@ interface DiscoverCtx {
 
 function discover(input: {
   sf: ts.SourceFile;
+  isRegistryReference: (name: ts.EntityName) => boolean;
   checker: ts.TypeChecker;
   writable: WritableColumns;
   placeholder: (n: number) => string;
@@ -116,7 +152,9 @@ function discover(input: {
   const found: Array<{ node: ts.TaggedTemplateExpression; name: string }> = [];
   (function scan(node: ts.Node): void {
     if (ts.isTaggedTemplateExpression(node)) {
-      const name = namedTag({ node, checker, bindings }) ?? registryTypedTag({ node, checker });
+      const name =
+        namedTag({ node, checker, bindings }) ??
+        registryTypedTag({ node, checker, isRegistryReference: input.isRegistryReference });
       if (name) {
         found.push({ node, name });
       }
@@ -158,6 +196,7 @@ interface TypedSqlBindings {
 // key is also the query name, which keeps first-run generation independent of the
 // generated module resolving successfully.
 function registryTypedTag(input: {
+  isRegistryReference: (name: ts.EntityName) => boolean;
   node: ts.TaggedTemplateExpression;
   checker: ts.TypeChecker;
 }): string | null {
@@ -174,8 +213,7 @@ function registryTypedTag(input: {
   }
   if (
     !ts.isTypeReferenceNode(rowType.objectType) ||
-    !ts.isIdentifier(rowType.objectType.typeName) ||
-    rowType.objectType.typeName.text !== 'Queries'
+    !input.isRegistryReference(rowType.objectType.typeName)
   ) {
     return null;
   }

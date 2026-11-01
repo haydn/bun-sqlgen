@@ -1,5 +1,5 @@
 import { sql } from 'bun';
-import type { Queries } from '#queries.gen.ts';
+import type { Queries as Q } from '#queries.gen.ts';
 
 const messages = await sql<
   Queries['ListMessages'][]
@@ -7,6 +7,6 @@ const messages = await sql<
 
 console.log(messages[0]?.body, messages[0]?.created_at.toISOString());
 
-const counts = await sql<Array<Queries['CountMessages']>>`SELECT count(*) AS total FROM messages`;
+const counts = await sql<Array<Q['CountMessages']>>`SELECT count(*) AS total FROM messages`;
 
 console.log(counts[0]?.total);

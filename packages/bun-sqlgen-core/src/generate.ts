@@ -174,7 +174,13 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       : [];
 
     // `writable` lets SET-clause neutralization self-assign a real column.
-    const discover = createDiscoverer({ projectRoot: cwd, files: sourceFiles, writable, dialect });
+    const discover = createDiscoverer({
+      projectRoot: cwd,
+      registryPath: outPath,
+      files: sourceFiles,
+      writable,
+      dialect,
+    });
 
     // All queries feed one aggregated registry, so names must be unique project-wide.
     const discovered: Array<{ q: DiscoveredQuery; file: string }> = [];
